@@ -119,8 +119,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     subscribed_users.add(user_id)
 
-    await update.message.reply_text(
-        "Привіт! Я буду нагадувати тобі про таблетку 💊 щодня об 11:00 (за іспанським часом)"
+await update.message.reply_text(
+        "Привіт!"
+        "Я буду щодня нагадувати тобі про таблетку 💊"
+        "об 11:00 (за іспанським часом)"
     )
 
 
