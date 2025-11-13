@@ -1,4 +1,4 @@
-# Pill reminder bot – v2
+# Pill reminder bot – v2 (token inside code)
 
 import os
 import json
@@ -13,6 +13,11 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
+
+# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+# ВСТАВ СВОЙ ТОКЕН ТУТ
+BOT_TOKEN = "8513409579:AAE9yAxqjq6_QekGvb30GRKezOW5-uKMFrc"
+# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 DATA_FILE = "users.json"
 TZ = ZoneInfo("Europe/Madrid")  # CET/CEST
@@ -46,7 +51,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_daily_prompt(context: ContextTypes.DEFAULT_TYPE):
-    """Send first reminder of the day (11:00 CET)."""
     data = load_data()
 
     keyboard = InlineKeyboardMarkup([
@@ -66,12 +70,11 @@ async def send_daily_prompt(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reminder_loop(context: ContextTypes.DEFAULT_TYPE):
-    """Every 15 minutes check and send reminders until 23:00 CET."""
     now = datetime.now(TZ)
     end_of_day = now.replace(hour=23, minute=0, second=0, microsecond=0)
 
     if now > end_of_day:
-        return  # Do nothing at night
+        return
 
     data = load_data()
     keyboard = InlineKeyboardMarkup([
@@ -90,7 +93,6 @@ async def reminder_loop(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reset_day(context: ContextTypes.DEFAULT_TYPE):
-    """Reset confirmation for the new day (00:00)."""
     data = load_data()
     for user_id in data.keys():
         data[user_id]["confirmed_today"] = False
@@ -99,7 +101,6 @@ async def reset_day(context: ContextTypes.DEFAULT_TYPE):
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle 'Так' press."""
     query = update.callback_query
     await query.answer()
 
@@ -113,32 +114,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def main():
-    token = os.getenv("BOT_TOKEN")
-    app = ApplicationBuilder().token(token).build()
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    # Commands
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
 
-    # SCHEDULER
     job_queue = app.job_queue
 
-    # Daily first prompt at 11:00 CET
     job_queue.run_daily(
         send_daily_prompt,
         time=time(hour=11, minute=0, tzinfo=TZ)
     )
 
-    # Night reset 00:00
     job_queue.run_daily(
         reset_day,
         time=time(hour=0, minute=0, tzinfo=TZ)
     )
 
-    # Reminders every 15 minutes
     job_queue.run_repeating(
         reminder_loop,
-        interval=900,  # 15 minutes
+        interval=900,
         first=0
     )
 
