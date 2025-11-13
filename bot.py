@@ -1,4 +1,4 @@
-# Pill reminder bot – v1
+# Pill reminder bot – v2
 
 import os
 import json
