@@ -1,4 +1,4 @@
-# Pill reminder bot – v2 (token inside code)
+# Pill reminder bot – v3 (token inside code, 12 reminders max between 11:00–14:00)
 
 import os
 import json
@@ -14,13 +14,15 @@ from telegram.ext import (
     ContextTypes,
 )
 
-# >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
-# ВСТАВ СВОЙ ТОКЕН ТУТ
+# ВСТАВ СВІЙ СПРАВЖНІЙ ТОКЕН ТУТ (ЦЕ ПРИКЛАД, ЗАМІНИ ЙОГО)
 BOT_TOKEN = "8513409579:AAE9yAxqjq6_QekGvb30GRKezOW5-uKMFrc"
-# <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
 DATA_FILE = "users.json"
 TZ = ZoneInfo("Europe/Madrid")  # CET/CEST
+
+MAX_REMINDERS_PER_DAY = 12       # максимум 12 нагадувань на користувача
+END_HOUR = 14                    # після 14:00 за Мадридом не шлемо нічого
+REMINDER_INTERVAL_SECONDS = 15 * 60  # 15 хвилин
 
 
 def load_data():
@@ -35,13 +37,28 @@ def save_data(data):
         json.dump(data, f)
 
 
+def reset_for_today():
+    """
+    Очищаємо денний статус для всіх користувачів.
+    Викликається 1 раз на старті скрипта (один запуск на день).
+    """
+    data = load_data()
+    for user_id in data.keys():
+        data[user_id]["confirmed_today"] = False
+        data[user_id]["reminders_sent_today"] = 0
+    save_data(data)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /start – реєструє користувача в users.json, якщо його там ще немає.
+    """
     user_id = str(update.effective_user.id)
     data = load_data()
     if user_id not in data:
         data[user_id] = {
             "confirmed_today": False,
-            "last_reminder_time": None
+            "reminders_sent_today": 0,
         }
         save_data(data)
 
@@ -50,30 +67,39 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-async def send_daily_prompt(context: ContextTypes.DEFAULT_TYPE):
+async def send_first_prompt(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Перший запуск одразу після старту скрипта (о 11:00):
+    шлемо початкове нагадування всім користувачам.
+    """
     data = load_data()
 
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("Так", callback_data="confirm_yes")]
     ])
 
-    for user_id in data.keys():
-        data[user_id]["confirmed_today"] = False
-        data[user_id]["last_reminder_time"] = None
+    for user_id, info in data.items():
+        # На старті дня всі confirmed_today = False, reminders_sent_today = 0
         await context.bot.send_message(
             chat_id=int(user_id),
             text="Ти прийняла таблетку?",
             reply_markup=keyboard
         )
+        info["reminders_sent_today"] = 1
 
     save_data(data)
 
 
 async def reminder_loop(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Кожні 15 хвилин:
+    – не шлемо нічого після 14:00
+    – не шлемо, якщо already confirmed_today
+    – не шлемо, якщо reminders_sent_today >= 12
+    """
     now = datetime.now(TZ)
-    end_of_day = now.replace(hour=23, minute=0, second=0, microsecond=0)
-
-    if now > end_of_day:
+    if now.hour >= END_HOUR:
+        # Після 14:00 – просто не робимо нічого
         return
 
     data = load_data()
@@ -82,59 +108,71 @@ async def reminder_loop(context: ContextTypes.DEFAULT_TYPE):
     ])
 
     for user_id, info in data.items():
-        if not info["confirmed_today"]:
-            await context.bot.send_message(
-                chat_id=int(user_id),
-                text="Нагадування: ти прийняла таблетку?",
-                reply_markup=keyboard
-            )
+        confirmed = info.get("confirmed_today", False)
+        count = info.get("reminders_sent_today", 0)
 
-    save_data(data)
+        if confirmed:
+            continue  # юзер уже натиснув "Так" сьогодні
 
+        if count >= MAX_REMINDERS_PER_DAY:
+            continue  # досягли ліміту нагадувань
 
-async def reset_day(context: ContextTypes.DEFAULT_TYPE):
-    data = load_data()
-    for user_id in data.keys():
-        data[user_id]["confirmed_today"] = False
-        data[user_id]["last_reminder_time"] = None
+        # Надсилаємо чергове нагадування
+        await context.bot.send_message(
+            chat_id=int(user_id),
+            text="Нагадування: ти прийняла таблетку?",
+            reply_markup=keyboard
+        )
+
+        info["reminders_sent_today"] = count + 1
+
     save_data(data)
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Обробка натискання кнопки "Так".
+    """
     query = update.callback_query
     await query.answer()
 
     user_id = str(query.from_user.id)
     data = load_data()
 
-    data[user_id]["confirmed_today"] = True
+    if user_id not in data:
+        data[user_id] = {
+            "confirmed_today": True,
+            "reminders_sent_today": 0,
+        }
+    else:
+        data[user_id]["confirmed_today"] = True
+
     save_data(data)
 
     await query.edit_message_text("Добре! На сьогодні більше нагадувань не буде 👍")
 
 
 async def main():
+    # Один запуск скрипта = один день → перед стартом обнуляємо денний статус
+    reset_for_today()
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
 
+    # Хендлери
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
 
     job_queue = app.job_queue
 
-    job_queue.run_daily(
-        send_daily_prompt,
-        time=time(hour=11, minute=0, tzinfo=TZ)
-    )
+    # Одразу після старту (GitHub Actions ти запускаєш о 11:00 CET)
+    # – шлемо перше нагадування всім зареєстрованим користувачам
+    job_queue.run_once(send_first_prompt, when=0)
 
-    job_queue.run_daily(
-        reset_day,
-        time=time(hour=0, minute=0, tzinfo=TZ)
-    )
-
+    # Далі – кожні 15 хвилин до 14:00, максимум 12 нагадувань
     job_queue.run_repeating(
         reminder_loop,
-        interval=900,
-        first=0
+        interval=REMINDER_INTERVAL_SECONDS,
+        first=REMINDER_INTERVAL_SECONDS,
     )
 
     print("Bot started...")
