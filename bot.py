@@ -122,8 +122,27 @@ async def say_random_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def testpill(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Тестовий режим: нагадування кожну 1 хвилину 💊")
+    """Тестовий режим – нагадування кожну 1 хвилину."""
+    if update.message is None:
+        return
+
+    user_id = update.effective_user.id
+
+    # додаємо юзера в список підписаних (на випадок, якщо /start не натискали)
+    subscribed_users.add(user_id)
+
+    # прибираємо всі старі нагадування для цього юзера,
+    # щоб не було кількох паралельних ланцюжків
+    for job in context.application.job_queue.get_jobs_by_name(f"reminder_{user_id}"):
+        job.schedule_removal()
+
+    await update.message.reply_text(
+        "Тестовий режим: нагадування кожну 1 хвилину 💊"
+    )
+
+    # запускаємо такий самий сценарій, як щоденний, але в тест-режимі
     await send_daily_first_reminder(context, test_mode=True)
+
 
 
 # ------------------ REMINDER LOGIC ------------------
