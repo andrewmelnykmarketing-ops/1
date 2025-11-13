@@ -1,0 +1,12 @@
+services:
+  - type: worker
+    name: telegram-pill-bot
+    env: python
+    plan: free
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    envVars:
+      BOT_TOKEN:
+        fromService:
+          name: telegram-pill-bot
+          type: env
