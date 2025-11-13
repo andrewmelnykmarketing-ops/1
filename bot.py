@@ -1,3 +1,5 @@
+# Pill reminder bot – v1
+
 import os
 import json
 import asyncio
