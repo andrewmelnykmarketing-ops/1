@@ -1,7 +1,6 @@
 import os
 import random
 from datetime import time
-from zoneinfo import ZoneInfo
 from collections import defaultdict
 
 from telegram import (
@@ -18,17 +17,18 @@ from telegram.ext import (
     filters,
 )
 
+# Токен беремо з змінної середовища
 TOKEN = os.getenv("BOT_TOKEN")
 
-# хто підписався на нагадування
+# Юзери, які підписались на нагадування
 subscribed_users = set()
 
-# стан по кожному юзеру на сьогодні:
+# Стан по кожному юзеру на сьогодні:
 # has_taken – чи натиснули "Так" сьогодні
 # reminders_sent – скільки 20-хв нагадувань уже було
 user_state = defaultdict(lambda: {"has_taken": False, "reminders_sent": 0})
 
-# список побажань
+# Список побажань для рандомної відповіді
 good_wishes = [
     "Гарного тобі дня 🌿",
     "Хай сьогодні буде світло всередині",
@@ -114,14 +114,12 @@ async def say_random_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_daily_first_reminder(context: ContextTypes.DEFAULT_TYPE):
     """
-    Щоденний тригер о 11:00 (Europe/Madrid):
+    Щоденний тригер:
     – скидаємо стан на сьогодні
     – шлемо перше повідомлення "Ти випила таблетку?"
     – запускаємо 20-хв нагадування для кожного юзера
     """
-    print("Running daily 11:00 job")
-
-    job_queue = context.application.job_queue
+    print("Running daily job")
 
     for user_id in list(subscribed_users):
         # скидаємо стан на новий день
@@ -139,8 +137,7 @@ async def send_daily_first_reminder(context: ContextTypes.DEFAULT_TYPE):
             continue
 
         # запускаємо нагадування кожні 20 хв, максимум 12 разів
-        # перше – через 20 хв після 11:00
-        job_queue.run_repeating(
+        context.job_queue.run_repeating(
             pill_followup_reminder,
             interval=20 * 60,           # 20 хв у секундах
             first=20 * 60,              # перше нагадування через 20 хв
@@ -163,12 +160,10 @@ async def pill_followup_reminder(context: ContextTypes.DEFAULT_TYPE):
     state = user_state[user_id]
 
     if state["has_taken"]:
-        # вже відмітила – на сьогодні вистачить
         job.schedule_removal()
         return
 
     if state["reminders_sent"] >= 12:
-        # досягли ліміту 12 нагадувань
         job.schedule_removal()
         return
 
@@ -202,7 +197,6 @@ async def pill_taken_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_state[user_id]["has_taken"] = True
     user_state[user_id]["reminders_sent"] = 0
 
-    # редагуємо останнє повідомлення
     try:
         await query.edit_message_text(
             "Молодець 💊 Побачимось завтра о 11:00 😉"
@@ -211,16 +205,31 @@ async def pill_taken_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"Error editing message for {user_id}: {e}")
 
     # зупиняємо всі jobs з нагадуваннями для цього юзера
-    job_queue = context.application.job_queue
-    for job in job_queue.get_jobs_by_name(f"reminder_{user_id}"):
+    for job in context.job_queue.get_jobs_by_name(f"reminder_{user_id}"):
         job.schedule_removal()
 
 
+async def testpill(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Тестова команда – щоб не чекати 11:00.
+    Викликає такий самий процес, як щоденний джоб.
+    """
+    if update.message is None:
+        return
+
+    await update.message.reply_text("Тестово запускаю нагадування 💊")
+    await send_daily_first_reminder(context)
+
+
 def main():
+    if not TOKEN:
+        raise RuntimeError("BOT_TOKEN env var is not set")
+
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # хендлери
+    # Хендлери
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("testpill", testpill))
     app.add_handler(
         CallbackQueryHandler(pill_taken_button, pattern="^pill_taken$")
     )
@@ -228,13 +237,12 @@ def main():
         MessageHandler(filters.TEXT & ~filters.COMMAND, say_random_wish)
     )
 
-    # таймзона – Іспанія (CET/CEST, автоматично з літнім часом)
-    tz = ZoneInfo("Europe/Madrid")
-
-    # щоденний джоб о 11:00 по цій таймзоні
+    # ВАЖЛИВО: Render за замовчуванням працює в UTC.
+    # Якщо ти в Іспанії (CET = UTC+1 зараз восени),
+    # то щоб отримати 11:00 за місцевим – ставимо 10:00 UTC.
     app.job_queue.run_daily(
         send_daily_first_reminder,
-        time=time(hour=11, minute=0, tzinfo=tz),
+        time=time(hour=10, minute=0),  # 10:00 UTC ≈ 11:00 в Іспанії взимку
         name="daily_pill_job",
     )
 
