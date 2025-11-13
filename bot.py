@@ -3,6 +3,7 @@ import random
 import socket
 from datetime import time
 from collections import defaultdict
+from zoneinfo import ZoneInfo  # для коректної таймзони Europe/Madrid
 
 from telegram import (
     Update,
@@ -18,21 +19,21 @@ from telegram.ext import (
     filters,
 )
 
-# Токен із змінної середовища
+# Токен бота з Environment
 TOKEN = os.getenv("BOT_TOKEN")
 
-# Порт для Render (для фейкового лістенера)
+# Порт, який очікує Render (для фейкового лістенера)
 PORT = int(os.getenv("PORT", "10000"))
 
-# Юзери, які підписались на нагадування
-subscribed_users = set()
+# Хто підписаний на нагадування
+subscribed_users: set[int] = set()
 
-# Стан по кожному юзеру на сьогодні:
+# Стан по кожному користувачу на день
 # has_taken – чи натиснули "Так" сьогодні
-# reminders_sent – скільки 20-хв нагадувань уже було
+# reminders_sent – скільки нагадувань уже було
 user_state = defaultdict(lambda: {"has_taken": False, "reminders_sent": 0})
 
-# Список побажань для рандомної відповіді
+# Список побажань
 good_wishes = [
     "Гарного тобі дня 🌿",
     "Хай сьогодні буде світло всередині",
@@ -96,8 +97,8 @@ def pill_keyboard() -> InlineKeyboardMarkup:
 
 def bind_port():
     """
-    Фейковий лістенер для Render – просто відкриває порт і нічого не робить.
-    Це потрібно тільки щоб Render бачив відкритий порт і не падав з port scan timeout.
+    Фейковий лістенер для Render – просто відкриває порт.
+    Щоб Web Service не падав з 'port scan timeout'.
     """
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -107,8 +108,11 @@ def bind_port():
     return s
 
 
+# --------------- ХЕНДЛЕРИ КОМАНД -----------------
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start – підписує юзера на щоденні нагадування."""
+    """Команда /start – підписка на нагадування."""
     if update.message is None:
         return
 
@@ -116,12 +120,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     subscribed_users.add(user_id)
 
     await update.message.reply_text(
-        "Привіт! Я буду щодня о 11:00 нагадувати тобі про таблетку 💊"
+        "Привіт! Я буду щодня о 11:00 (за твоїм іспанським часом) "
+        "нагадувати тобі про таблетку 💊\n"
+        "Для тесту можеш використати команду /testpill."
     )
 
 
 async def say_random_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Відповідь на будь-яке текстове повідомлення – рандомне побажання."""
+    """Рандомне побажання на будь-яке текстове повідомлення."""
     if update.message is None:
         return
 
@@ -129,15 +135,39 @@ async def say_random_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(wish)
 
 
-async def send_daily_first_reminder(context: ContextTypes.DEFAULT_TYPE, test_mode: bool = False):
+async def testpill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    test_mode = True → повтори кожну 1 хв
-    test_mode = False → повтори кожні 20 хв
+    /testpill – запускає сценарій з таблеткою в тест-режимі:
+    нагадування кожну 1 хвилину (замість 20 хв).
+    """
+    if update.message is None:
+        return
+
+    await update.message.reply_text(
+        "Тестовий режим 💊 Нагадування кожну 1 хвилину."
+    )
+    await send_daily_first_reminder(context, test_mode=True)
+
+
+# --------------- ЛОГІКА НАГАДУВАНЬ -----------------
+
+
+async def send_daily_first_reminder(
+    context: ContextTypes.DEFAULT_TYPE,
+    test_mode: bool = False,
+):
+    """
+    Перший щоденний (або тестовий) запуск:
+    – скидаємо стан
+    – шлемо 'Ти випила таблетку?'
+    – запускаємо повторні нагадування
+    test_mode = False → кожні 20 хв
+    test_mode = True → кожну 1 хв
     """
     print("Running daily job (test_mode =", test_mode, ")")
 
     for user_id in list(subscribed_users):
-        # скидаємо стан на новий день / тестовий запуск
+        # новий день / новий тестовий запуск
         user_state[user_id]["has_taken"] = False
         user_state[user_id]["reminders_sent"] = 0
 
@@ -151,7 +181,7 @@ async def send_daily_first_reminder(context: ContextTypes.DEFAULT_TYPE, test_mod
             print(f"Error sending first reminder to {user_id}: {e}")
             continue
 
-        # інтервал залежить від режиму
+        # інтервали
         interval_seconds = 60 if test_mode else 20 * 60
         first_delay = 60 if test_mode else 20 * 60
 
@@ -166,9 +196,9 @@ async def send_daily_first_reminder(context: ContextTypes.DEFAULT_TYPE, test_mod
 
 async def pill_followup_reminder(context: ContextTypes.DEFAULT_TYPE):
     """
-    Нагадування кожні 20 хв:
-    – якщо натиснули "Так" або вже 12 разів – зупиняємо job
-    – інакше шлемо "Ну шо? Випила таблетку?"
+    Нагадування:
+    – якщо натиснули "Так" або 12 разів – стоп
+    – інакше 'Ну шо? Випила таблетку?'
     """
     job = context.job
     if job is None:
@@ -200,9 +230,9 @@ async def pill_followup_reminder(context: ContextTypes.DEFAULT_TYPE):
 
 async def pill_taken_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Обробка натискання кнопки "Так":
+    Натискання кнопки "Так":
     – ставимо has_taken = True
-    – обнуляємо лічильник нагадувань
+    – обнуляємо лічильник
     – прибираємо всі jobs з нагадуваннями для цього юзера
     """
     query = update.callback_query
@@ -222,50 +252,52 @@ async def pill_taken_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Error editing message for {user_id}: {e}")
 
-    for job in context.application.job_queue.get_jobs_by_name(f"reminder_{user_id}"):
+    for job in context.application.job_queue.get_jobs_by_name(
+        f"reminder_{user_id}"
+    ):
         job.schedule_removal()
 
 
-async def testpill(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Тестова команда – запускає нагадування кожну 1 хвилину."""
-    if update.message is None:
-        return
-
-    await update.message.reply_text("Тестовий режим 💊 Нагадування кожну 1 хвилину.")
-    await send_daily_first_reminder(context, test_mode=True)
-
+# --------------- MAIN -----------------
 
 
 def main():
     if not TOKEN:
         raise RuntimeError("BOT_TOKEN env var is not set")
 
-    # відкриваємо порт для Render (щоб не було port scan timeout)
+    # відкриваємо порт для Render (щоб Web Service був задоволений)
     listener = bind_port()
 
     app = ApplicationBuilder().token(TOKEN).build()
 
-    # Хендлери
+    # Команди
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("testpill", testpill))
+
+    # Кнопка "Так"
     app.add_handler(
         CallbackQueryHandler(pill_taken_button, pattern="^pill_taken$")
     )
+
+    # Рандомне побажання на будь-який текст, що не є командою
     app.add_handler(
         MessageHandler(filters.TEXT & ~filters.COMMAND, say_random_wish)
     )
 
-    # Render працює в UTC. 10:00 UTC ≈ 11:00 в Іспанії взимку (CET).
+    # Таймзона – Іспанія (автоматично CET/CEST)
+    tz = ZoneInfo("Europe/Madrid")
+
+    # Щоденне нагадування о 11:00 за локальним часом Іспанії
     app.job_queue.run_daily(
         send_daily_first_reminder,
-        time=time(hour=10, minute=0),
+        time=time(hour=11, minute=0, tzinfo=tz),
         name="daily_pill_job",
     )
 
     print("Bot started")
     app.run_polling()
 
-    # щоб lint не сварився, що змінна не використовується
+    # щоб змінна listener не вважалась "невикористаною"
     _ = listener
 
 
