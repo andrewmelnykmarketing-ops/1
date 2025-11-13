@@ -1,38 +1,21 @@
-# Simple test bot – send "Привіт" to all subscribed users
-
-import json
 import os
-from telegram import Bot
+from telegram.ext import ApplicationBuilder, MessageHandler, filters
 
-# >>> встав свій токен <<<
-BOT_TOKEN = "8513409579:AAE9yAxqjq6_QekGvb30GRKezOW5-uKMFrc"
+TOKEN = os.getenv("BOT_TOKEN")  # токен беремо з змінної середовища
 
-DATA_FILE = "users.json"
-
-
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {}
-    with open(DATA_FILE, "r") as f:
-        try:
-            return json.load(f)
-        except:
-            return {}
-
+async def say_hi(update, context):
+    # відповідаємо "привіт" на будь-яке текстове повідомлення
+    if update.message:
+        await update.message.reply_text("привіт")
 
 def main():
-    bot = Bot(token=BOT_TOKEN)
-    data = load_data()
+    app = ApplicationBuilder().token(TOKEN).build()
 
-    print("Sending messages to:", data.keys())
+    # Ловимо всі повідомлення
+    app.add_handler(MessageHandler(filters.ALL, say_hi))
 
-    for user_id in data.keys():
-        try:
-            bot.send_message(chat_id=int(user_id), text="Привіт 👋 (тестове повідомлення)")
-            print("OK →", user_id)
-        except Exception as e:
-            print("ERR →", user_id, str(e))
-
+    # Запускаємо бота у режимі polling
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
