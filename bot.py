@@ -1,5 +1,6 @@
 import os
 import random
+import socket
 from datetime import time
 from collections import defaultdict
 
@@ -17,8 +18,11 @@ from telegram.ext import (
     filters,
 )
 
-# Токен беремо з змінної середовища
+# Токен із змінної середовища
 TOKEN = os.getenv("BOT_TOKEN")
+
+# Порт для Render (для фейкового лістенера)
+PORT = int(os.getenv("PORT", "10000"))
 
 # Юзери, які підписались на нагадування
 subscribed_users = set()
@@ -90,6 +94,19 @@ def pill_keyboard() -> InlineKeyboardMarkup:
     )
 
 
+def bind_port():
+    """
+    Фейковий лістенер для Render – просто відкриває порт і нічого не робить.
+    Це потрібно тільки щоб Render бачив відкритий порт і не падав з port scan timeout.
+    """
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind(("0.0.0.0", PORT))
+    s.listen(5)
+    print(f"Listening on port {PORT} for Render health checks")
+    return s
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start – підписує юзера на щоденні нагадування."""
     if update.message is None:
@@ -112,17 +129,15 @@ async def say_random_wish(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(wish)
 
 
-async def send_daily_first_reminder(context: ContextTypes.DEFAULT_TYPE):
+async def send_daily_first_reminder(context: ContextTypes.DEFAULT_TYPE, test_mode: bool = False):
     """
-    Щоденний тригер:
-    – скидаємо стан на сьогодні
-    – шлемо перше повідомлення "Ти випила таблетку?"
-    – запускаємо 20-хв нагадування для кожного юзера
+    test_mode = True → повтори кожну 1 хв
+    test_mode = False → повтори кожні 20 хв
     """
-    print("Running daily job")
+    print("Running daily job (test_mode =", test_mode, ")")
 
     for user_id in list(subscribed_users):
-        # скидаємо стан на новий день
+        # скидаємо стан на новий день / тестовий запуск
         user_state[user_id]["has_taken"] = False
         user_state[user_id]["reminders_sent"] = 0
 
@@ -136,11 +151,14 @@ async def send_daily_first_reminder(context: ContextTypes.DEFAULT_TYPE):
             print(f"Error sending first reminder to {user_id}: {e}")
             continue
 
-        # запускаємо нагадування кожні 20 хв, максимум 12 разів
+        # інтервал залежить від режиму
+        interval_seconds = 60 if test_mode else 20 * 60
+        first_delay = 60 if test_mode else 20 * 60
+
         context.job_queue.run_repeating(
             pill_followup_reminder,
-            interval=20 * 60,           # 20 хв у секундах
-            first=20 * 60,              # перше нагадування через 20 хв
+            interval=interval_seconds,
+            first=first_delay,
             name=f"reminder_{user_id}",
             data={"user_id": user_id},
         )
@@ -204,26 +222,26 @@ async def pill_taken_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Error editing message for {user_id}: {e}")
 
-    # зупиняємо всі jobs з нагадуваннями для цього юзера
-    for job in context.job_queue.get_jobs_by_name(f"reminder_{user_id}"):
+    for job in context.application.job_queue.get_jobs_by_name(f"reminder_{user_id}"):
         job.schedule_removal()
 
 
 async def testpill(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Тестова команда – щоб не чекати 11:00.
-    Викликає такий самий процес, як щоденний джоб.
-    """
+    """Тестова команда – запускає нагадування кожну 1 хвилину."""
     if update.message is None:
         return
 
-    await update.message.reply_text("Тестово запускаю нагадування 💊")
-    await send_daily_first_reminder(context)
+    await update.message.reply_text("Тестовий режим 💊 Нагадування кожну 1 хвилину.")
+    await send_daily_first_reminder(context, test_mode=True)
+
 
 
 def main():
     if not TOKEN:
         raise RuntimeError("BOT_TOKEN env var is not set")
+
+    # відкриваємо порт для Render (щоб не було port scan timeout)
+    listener = bind_port()
 
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -237,17 +255,18 @@ def main():
         MessageHandler(filters.TEXT & ~filters.COMMAND, say_random_wish)
     )
 
-    # ВАЖЛИВО: Render за замовчуванням працює в UTC.
-    # Якщо ти в Іспанії (CET = UTC+1 зараз восени),
-    # то щоб отримати 11:00 за місцевим – ставимо 10:00 UTC.
+    # Render працює в UTC. 10:00 UTC ≈ 11:00 в Іспанії взимку (CET).
     app.job_queue.run_daily(
         send_daily_first_reminder,
-        time=time(hour=10, minute=0),  # 10:00 UTC ≈ 11:00 в Іспанії взимку
+        time=time(hour=10, minute=0),
         name="daily_pill_job",
     )
 
     print("Bot started")
     app.run_polling()
+
+    # щоб lint не сварився, що змінна не використовується
+    _ = listener
 
 
 if __name__ == "__main__":
