@@ -202,7 +202,11 @@ async def pill_taken_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     user_state[user_id]["has_taken"] = True
 
-    await query.edit_message_text("Молодець 💊 Побачимось завтра об 11:00 😉")
+    await query.edit_message_text(
+    "Молодець 💊\n"
+    "Побачимось завтра об 11:00 😉"
+)
+
 
     for job in context.application.job_queue.get_jobs_by_name(f"reminder_{user_id}"):
         job.schedule_removal()
