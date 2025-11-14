@@ -1,6 +1,8 @@
 import os
 import random
-import socket
+import socket  # можна вже не використовувати, але нехай висить – не заважає
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import time
 from collections import defaultdict
 from zoneinfo import ZoneInfo
@@ -22,7 +24,7 @@ from telegram.ext import (
 # Token
 TOKEN = os.getenv("BOT_TOKEN")
 
-# Port for Render
+# Port for Render / HTTP health-check
 PORT = int(os.getenv("PORT", "10000"))
 
 # Subscribed users
@@ -62,7 +64,7 @@ good_wishes = [
     "Нехай знайдеться щось добре навіть у дрібницях",
     "Бажаю тихої радості",
     "Хай тебе огорне спокій",
-    "Нехай сили приходять рівно настільки, наскільки потрібно",
+    "Хай у твоєму дні буде більше тепла, ніж ти очікуєш 🌿",
     "Бажаю внутрішньої опори",
     "Хай серце стане теплішим",
     "Нехай думки будуть ясними",
@@ -86,14 +88,31 @@ good_wishes = [
 ]
 
 
+# ---------- HTTP health-check сервер для Render + UptimeRobot ----------
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.end_headers()
+        self.wfile.write("Bot is running".encode("utf-8"))
+
+    # щоб не засмічував логами stdout
+    def log_message(self, format, *args):
+        return
+
+
 def bind_port():
-    """Fake listener for Render."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    s.bind(("0.0.0.0", PORT))
-    s.listen(5)
-    print(f"Listening on port {PORT}")
-    return s
+    """
+    HTTP-сервер для health-check.
+    Працює у фоні, відповідає 200 OK на будь-який GET.
+    """
+    server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
+    thread = threading.Thread(target=server.serve_forever)
+    thread.daemon = True
+    thread.start()
+    print(f"Health server listening on port {PORT}")
+    return server
 
 
 def pill_keyboard():
@@ -144,14 +163,17 @@ async def testpill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_daily_first_reminder(context, test_mode=True)
 
 
-
 # ------------------ REMINDER LOGIC ------------------
 
 
-async def send_daily_first_reminder(context: ContextTypes.DEFAULT_TYPE, test_mode=False):
+async def send_daily_first_reminder(
+    context: ContextTypes.DEFAULT_TYPE,
+    test_mode: bool = False,
+):
     print("Running job, test_mode =", test_mode)
 
     for user_id in list(subscribed_users):
+        # новий цикл – скидаємо стан
         user_state[user_id]["has_taken"] = False
         user_state[user_id]["reminders_sent"] = 0
 
@@ -203,10 +225,9 @@ async def pill_taken_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_state[user_id]["has_taken"] = True
 
     await query.edit_message_text(
-    "Молодець 💊\n"
-    "Побачимось завтра об 11:00 😉"
-)
-
+        "Молодець 💊\n"
+        "Побачимось завтра об 11:00 😉"
+    )
 
     for job in context.application.job_queue.get_jobs_by_name(f"reminder_{user_id}"):
         job.schedule_removal()
@@ -219,7 +240,8 @@ def main():
     if not TOKEN:
         raise RuntimeError("BOT_TOKEN is missing")
 
-    listener = bind_port()
+    # запускаємо HTTP health-сервер
+    health_server = bind_port()
 
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -242,7 +264,8 @@ def main():
     print("Bot started")
     app.run_polling()
 
-    _ = listener
+    # щоб змінна не вважалась невикористаною
+    _ = health_server
 
 
 if __name__ == "__main__":
