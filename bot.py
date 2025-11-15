@@ -1,11 +1,12 @@
 import os
 import random
-import socket  # можна вже не використовувати, але нехай висить – не заважає
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import time
 from collections import defaultdict
 from zoneinfo import ZoneInfo
+
+import httpx  # вже є як залежність від python-telegram-bot
 
 from telegram import (
     Update,
@@ -26,6 +27,9 @@ TOKEN = os.getenv("BOT_TOKEN")
 
 # Port for Render / HTTP health-check
 PORT = int(os.getenv("PORT", "10000"))
+
+# Public URL Render-сервісу (для самопінгу)
+RENDER_URL = os.getenv("RENDER_URL", "https://one-9uds.onrender.com")
 
 # Subscribed users
 subscribed_users = set()
@@ -97,22 +101,29 @@ class HealthHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write("Bot is running".encode("utf-8"))
 
-    # щоб не засмічував логами stdout
+    # не засмічуємо лог
     def log_message(self, format, *args):
         return
 
 
-def bind_port():
-    """
-    HTTP-сервер для health-check.
-    Працює у фоні, відповідає 200 OK на будь-який GET.
-    """
+def start_health_server():
     server = HTTPServer(("0.0.0.0", PORT), HealthHandler)
     thread = threading.Thread(target=server.serve_forever)
     thread.daemon = True
     thread.start()
     print(f"Health server listening on port {PORT}")
     return server
+
+
+# ---------- Самопінг Render-URL, щоб сервіс не засинав ----------
+
+async def self_ping(context: ContextTypes.DEFAULT_TYPE):
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(RENDER_URL)
+        print(f"Self ping OK: {resp.status_code}")
+    except Exception as e:
+        print(f"Self ping failed: {e}")
 
 
 def pill_keyboard():
@@ -150,8 +161,7 @@ async def testpill(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # додаємо юзера в список підписаних (на випадок, якщо /start не натискали)
     subscribed_users.add(user_id)
 
-    # прибираємо всі старі нагадування для цього юзера,
-    # щоб не було кількох паралельних ланцюжків
+    # прибираємо всі старі нагадування для цього юзера
     for job in context.application.job_queue.get_jobs_by_name(f"reminder_{user_id}"):
         job.schedule_removal()
 
@@ -241,7 +251,7 @@ def main():
         raise RuntimeError("BOT_TOKEN is missing")
 
     # запускаємо HTTP health-сервер
-    health_server = bind_port()
+    health_server = start_health_server()
 
     app = ApplicationBuilder().token(TOKEN).build()
 
@@ -255,16 +265,25 @@ def main():
     )
 
     tz = ZoneInfo("Europe/Madrid")
+
+    # щоденне нагадування
     app.job_queue.run_daily(
         send_daily_first_reminder,
         time=time(hour=11, minute=0, tzinfo=tz),
         name="daily_job",
     )
 
+    # самопінг Render-URL кожні 5 хв після старту
+    app.job_queue.run_repeating(
+        self_ping,
+        interval=5 * 60,
+        first=60,
+        name="self_ping",
+    )
+
     print("Bot started")
     app.run_polling()
 
-    # щоб змінна не вважалась невикористаною
     _ = health_server
 
 
